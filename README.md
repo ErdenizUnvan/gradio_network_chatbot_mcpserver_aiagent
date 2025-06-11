@@ -2,6 +2,22 @@
 
 gradio network chatbot with mcp server and ai agent for sso network automation functions (detect device type, get device backup, get serial numbers for cisco, arista and huawei)
 
+intent classification model: facebook-bart-large-mnli
+
+function calling and managing model: llama 3.2 3B
+
+Single Sign On with Ldap server
+
+Gradio Integration
+
+MCP Server functions:
+
+-detect device type
+
+-get serial number
+
+-get backup
+
 python version: 3.12.9
 
 pip install huggingface_hub
