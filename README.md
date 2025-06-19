@@ -32,23 +32,35 @@ make sure ollama is working on your local env.:
 
 for details check: setting up ollama for local llama.ipynb
 
-pip install --upgrade gradio
+download nodejs: https://nodejs.org/en/download/
 
-pip install llama_index
-
-pip install llama-index-llms-ollama
+npv --version
 
 pip install langchain_core
 
 pip install --upgrade --force-reinstall langgraph
 
-pip install langchain_mcp_adapters
+pip install langgraph --upgrade 
 
-pip install langchain_ollama
+pip install langchain_mcp_adapters 
+
+pip install langchain_ollama 
 
 pip install mcp==1.6.0
 
 pip install fastmcp
+
+pip install llama_index
+
+pip install llama-index-llms-ollama 
+
+pip install uv
+
+pip install ldap3
+
+pip install gradio --upgrade
+
+pip install netmiko
 
 at one terminal run:
 
