@@ -24,6 +24,10 @@ pip install huggingface_hub
 
 pip install transformers
 
+pip install torch
+
+pip install tensorflow
+
 download facebook/bart-large-mnli model from hugginf face to your local env.:
 
 python compare_intent_model_save.py
