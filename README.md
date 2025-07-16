@@ -38,7 +38,7 @@ for details check: setting up ollama for local llama.ipynb
 
 download nodejs: https://nodejs.org/en/download/
 
-npv --version
+npm -v
 
 pip install langchain_core
 
