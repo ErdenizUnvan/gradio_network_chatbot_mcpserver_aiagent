@@ -74,5 +74,5 @@ at another teminal run:
 
 python network_ai_agent_gradio.py
 
-How to use: https://www.youtube.com/watch?v=j4E4SJ9_cD8
+How to use: https://www.youtube.com/watch?v=6ABHe4Czy3o
 
