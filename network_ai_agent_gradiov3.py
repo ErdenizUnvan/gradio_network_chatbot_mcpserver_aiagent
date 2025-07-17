@@ -52,7 +52,6 @@ system_prompt = (
 
 os.environ['OPENAI_API_KEY'] = ''
 
-#chat_model = ChatOllama(model="llama3.2").with_config({"system_prompt": system_prompt})
 chat_model = ChatOpenAI(model="gpt-3.5-turbo",
  temperature=0).with_config({
     "system_prompt": system_prompt
