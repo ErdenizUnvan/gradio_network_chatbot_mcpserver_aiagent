@@ -42,6 +42,8 @@ npm -v
 
 pip install langchain_core
 
+pip install langchain_openai
+
 pip install --upgrade --force-reinstall langgraph
 
 pip install langgraph --upgrade 
