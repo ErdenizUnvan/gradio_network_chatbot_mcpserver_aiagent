@@ -40,13 +40,13 @@ download nodejs: https://nodejs.org/en/download/
 
 npm -v
 
-pip install langchain_core
+pip install langchain_core==1.2.6
 
 pip install langchain_openai
 
 pip install --upgrade --force-reinstall langgraph
 
-pip install langgraph --upgrade 
+pip install langgraph==1.0.5
 
 pip install langchain_mcp_adapters 
 
@@ -54,7 +54,7 @@ pip install langchain_ollama
 
 pip install mcp==1.6.0
 
-pip install fastmcp
+pip install fastmcp==2.2.6
 
 pip install llama_index
 
@@ -64,7 +64,7 @@ pip install uv
 
 pip install ldap3
 
-pip install gradio --upgrade
+pip install gradio==6.2.0
 
 pip install netmiko
 
