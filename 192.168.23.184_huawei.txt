@@ -1,0 +1,161 @@
+
+system-view
+
+sysname AR1000
+
+stp disable
+
+authentication-profile name default_authen_profile
+authentication-profile name dot1x_authen_profile
+authentication-profile name dot1xmac_authen_profile
+authentication-profile name mac_authen_profile
+authentication-profile name multi_authen_profile
+authentication-profile name portal_authen_profile
+
+domain test.com
+
+dhcp enable
+
+radius-server template default
+
+radius-server template shiva
+ radius-server shared-key cipher Kc123456789
+ radius-server authentication 192.168.23.141 1812 weight 80
+ radius-server accounting 192.168.23.141 1813 weight 80
+ radius-server retransmit 2
+ undo radius-server user-name domain-included
+
+pki realm default
+
+ssl policy default_policy type server
+ pki-realm default
+ version tls1.2
+ ciphersuite rsa_aes_128_cbc_sha rsa_aes_128_sha256 rsa_aes_256_sha256 ecdhe_rsa_aes128_gcm_sha256 ecdhe_rsa_aes256_gcm_sha384
+
+acl number 3001
+ rule 5 permit tcp source 192.168.23.145 0 destination 192.168.23.184 0 destination-port eq 22
+ rule 10 permit udp source 192.168.23.184 0 destination 192.168.23.141 0 destination-port eq 1812
+ rule 15 permit udp source 192.168.23.184 0 destination 192.168.23.141 0 destination-port eq 1813
+ rule 20 deny tcp source 192.168.23.141 0 destination 192.168.23.184 0 destination-port eq 22
+ rule 25 permit ip
+
+ike proposal default
+ encryption-algorithm aes-256 aes-192 aes-128
+ dh group14
+ authentication-algorithm sha2-512 sha2-384 sha2-256
+ authentication-method pre-share
+ integrity-algorithm hmac-sha2-256
+ prf hmac-sha2-256
+
+free-rule-template name default_free_rule
+
+portal-access-profile name portal_access_profile
+
+aaa
+ authentication-scheme auth
+  authentication-mode radius local
+ authentication-scheme default
+ authentication-scheme radius
+  authentication-mode radius
+ authentication-scheme radius_auth
+  authentication-mode radius local
+ authorization-scheme default
+ authorization-scheme radius_auth
+ accounting-scheme abc
+  accounting-mode radius
+  accounting start-fail online
+ accounting-scheme default
+ local-aaa-user password policy administrator
+  undo password alert original
+ local-aaa-user password policy access-user
+ service-scheme radius_priv
+  admin-user privilege level 15
+ domain default
+  authentication-scheme auth
+  accounting-scheme abc
+  authorization-scheme radius_auth
+  radius-server shiva
+ domain default_admin
+  authentication-scheme radius_auth
+  accounting-scheme abc
+  authorization-scheme radius_auth
+  radius-server shiva
+ domain huawei
+  authentication-scheme auth
+  accounting-scheme abc
+  authorization-scheme radius_auth
+  radius-server shiva
+ domain test.com
+  authentication-scheme radius_auth
+  accounting-scheme abc
+  authorization-scheme radius_auth
+  radius-server shiva
+ undo user-password complexity-check
+ undo local-user admin
+ local-user super password irreversible-cipher $1a$*{I|>D;a<Z$lX]p.bOoOHdf"v;A.-H(_e7~6C>WyE~;vHK(4vJ$$
+ local-user super privilege level 15
+ local-user super service-type telnet terminal ssh
+ local-user user1 password irreversible-cipher $1a$WQ}72J\K3Q$E,@OXxm,70DqIA0#[:,<tQ<[(n6.,Bqc`"J"vIlS$
+ local-user user1 privilege level 15
+ local-user user1 service-type http
+ local-user student1 privilege level 15
+ local-user student1 service-type terminal ssh
+
+firewall zone Local
+
+interface GigabitEthernet0/0/0
+ ip address 192.168.23.184 255.255.255.0
+ traffic-filter inbound acl 3001
+
+interface GigabitEthernet0/0/1
+
+interface GigabitEthernet0/0/2
+
+interface GigabitEthernet0/0/3
+
+interface GigabitEthernet0/0/4
+
+interface GigabitEthernet0/0/5
+
+interface GigabitEthernet0/0/6
+ description VirtualPort
+
+interface NULL0
+
+snmp-agent local-engineid 800007DB03E0FC000A0B0C
+snmp-agent trap enable
+
+stelnet server enable
+ssh server permit interface GigabitEthernet0/0/0
+
+http secure-server ssl-policy default_policy
+http secure-server enable
+http server permit interface GigabitEthernet0/0/0
+
+ip route-static 0.0.0.0 0.0.0.0 192.168.23.2
+
+fib regularly-refresh disable
+
+user-interface con 0
+ authentication-mode aaa
+
+user-interface vty 0 4
+ authentication-mode aaa
+ user privilege level 15
+ screen-length 0
+ protocol inbound ssh
+
+
+dot1x-access-profile name dot1x_access_profile
+
+mac-access-profile name mac_access_profile
+
+ops
+
+autostart
+
+secelog
+
+ms-channel
+
+return

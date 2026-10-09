@@ -1,0 +1,67 @@
+download nodejs: https://nodejs.org/en/download/
+
+npm -v
+
+pip install virtualenv
+
+#python 3.12.9 indir
+_sizin_pc_username_ yerine asagida kendi pc username adini yaz
+
+cd THY
+
+cd hafta30
+
+cd mcp_server_ollama
+
+virtualenv env -p C:\Users\_sizin_pc_username_\AppData\Local\Programs\Python\Python312\python.exe
+
+env\Scripts\activate
+
+pip install -r requirements.txt
+
+pip install --upgrade --force-reinstall langgraph
+
+fastmcp dev test_tools_mcp_server.py
+
+calismazsa:
+
+versiyonlari kontrol et:
+
+node --version
+npm --version
+npx --version
+
+cacheleri temizle:
+
+npm cache clean --force
+
+Şimdi aynı CMD'de doğrudan Inspector'ı test et:
+
+npx @modelcontextprotocol/inspector
+
+eger soyle bir hata gelirse:
+Error running MCP Inspector: Cannot find native binding. 
+npm has a bug related to optional dependencies (https://github.com/npm/cli/issues/4828).
+Please try `npm i` again after removing both package-lock.json and node_modules directory.
+
+Python/FastMCP değil, Node/npm + MCP Inspector dependency problemi.
+Özellikle Node v24.21.0 çok yeni; burada en temiz yol önce npm'in npx cache'ini tamamen temizlemek.
+
+CMD'de sırayla:
+
+rmdir /s /q "%LOCALAPPDATA%\npm-cache"
+
+Sonra:
+npm cache verify
+
+Ardından Inspector'ı yeniden dene:
+npx @modelcontextprotocol/inspector
+
+kapat web servisini terminalden ve web sayfasindan
+
+fastmcp dev test_tools_mcp_server.py
+
+connected dugmesine bas. Eger calismazsa:
+
+uv run --with fastmcp fastmcp run test_tools_mcp_server.py
+

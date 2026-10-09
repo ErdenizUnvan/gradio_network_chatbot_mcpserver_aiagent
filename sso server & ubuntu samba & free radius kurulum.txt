@@ -1,0 +1,1534 @@
+SSO LAB KURULUMU
+
+Güncel Topoloji
+
+Ubuntu SSO Server
+IP       : 192.168.23.145
+SSH Port : 2222
+
+Ubuntu Samba AD + FreeRADIUS
+IP       : 192.168.23.141
+Domain   : TEST.COM
+NetBIOS  : TEST
+Hostname : dc1
+FQDN     : dc1.test.com
+
+Cisco IOS 1 : 192.168.23.181
+Cisco IOS 2 : 192.168.23.182
+Arista       : 192.168.23.183
+Huawei       : 192.168.23.184
+
+Netplan yapılandırmasına **`nameservers`** direktifini ekleyerek, `systemd-resolved` kapatılsa veya sistem yeniden başlatılsa dahi DNS çözümlemesinin düşmesini engelleyen ve olası apt kilitlenmelerini sırasıyla çözen güncellenmiş rehber:
+
+---
+
+# Ubuntu Server Samba AD + FreeRADIUS Kurulum Rehberi
+
+### Topoloji Bilgileri
+
+* **IP:** 192.168.23.141/24
+* **Gateway:** 192.168.23.2
+* **Domain:** TEST.COM
+* **NetBIOS:** TEST
+* **Hostname:** dc1
+* **FQDN:** dc1.test.com
+* **Interface:** ens3
+
+---
+
+## 1. Ubuntu Server Temel Hazırlık
+
+Kullanıcı girişi:
+
+* **Username:** `pfne`
+* **Password:** `pfne`
+
+Root yetkisine geç:
+
+```bash
+sudo -i
+
+```
+
+Ağ arayüzünü doğrula:
+
+```bash
+ip a
+
+```
+
+*(Bu senaryoda interface `ens3`)*
+
+İlk SSH servisi kurulumu ve başlatılması:
+
+```bash
+apt update
+apt install openssh-server -y
+
+systemctl enable --now ssh
+systemctl status ssh
+
+```
+
+---
+
+## 2. Statik IP ve DNS Tanımlaması (Netplan)
+
+Netplan yapılandırma dosyasını tam yol ile aç:
+
+ls -l /etc/netplan/
+
+
+```bash
+nano /etc/netplan/00-installer-config.yaml
+
+```
+
+Dosya içeriğini aşağıdaki gibi düzenle (*DNS çözümlemesinin kopmaması için `nameservers` bloğu eklenmiştir*):
+
+```yaml
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ens3:
+      dhcp4: no
+      addresses:
+        - 192.168.23.141/24
+      routes:
+        - to: default
+          via: 192.168.23.2
+      nameservers:
+        addresses:
+          - 8.8.8.8
+          - 1.1.1.1
+
+```
+
+Yapılandırmayı doğrula ve üret:
+
+```bash
+cat /etc/netplan/00-installer-config.yaml
+netplan get
+netplan generate
+
+```
+
+`systemd-networkd` dosyasında `DHCP=ipv4` olmadığını kontrol et:
+
+```bash
+cat /run/systemd/network/10-netplan-ens3.network
+
+```
+
+Yapılandırmayı uygula:
+
+```bash
+netplan apply
+
+```
+
+Hosts dosyasını güncelle:
+
+```bash
+cat > /etc/hosts << 'EOF'
+127.0.0.1       localhost
+127.0.1.1       pfne
+
+192.168.23.141 dc1.test.com dc1
+
+::1             localhost ip6-localhost ip6-loopback
+ff02::1         ip6-allnodes
+ff02::2         ip6-allrouters
+EOF
+
+```
+
+Ağ ve rota kontrolleri:
+
+```bash
+ip -4 addr show ens3
+ip route
+ping -c 3 8.8.8.8
+ping -c 3 archive.ubuntu.com
+
+```
+
+*(İsteğe bağlı olarak `reboot` ile kalıcılık test edilebilir.)*
+
+---
+
+## 3. Hostname Yapılandırması
+
+Hostname'i ayarla ve kontrol et:
+
+```bash
+hostnamectl set-hostname dc1
+
+hostname
+hostname -f
+getent hosts dc1.test.com
+
+
+reboot
+
+```
+
+**Beklenen Çıktılar:**
+
+* `hostname` $\rightarrow$ `dc1`
+* `hostname -f` $\rightarrow$ `dc1.test.com`
+* `getent hosts dc1.test.com` $\rightarrow$ `192.168.23.141 dc1.test.com dc1`
+
+---
+
+## 4. Port 53 Hazırlığı & DNS / Paket Yöneticisi Kurtarma
+
+Samba dahili DNS servisini (`Internal DNS`) kullanacağı için port 53'ü dinleyen 
+`systemd-resolved` stub resolver'ı devre dışı bırakılmalıdır.
+
+### Adım 4.1: Port 53'ü Boşaltma ve systemd-resolved'u Kapatma
+
+ss -lntup | grep ':53'
+
+```bash
+systemctl disable --now systemd-resolved
+
+```
+
+`systemd-resolved` kapatıldığında sembolik link kopabileceğinden, `/etc/resolv.conf` dosyasını statik olarak tanımla:
+
+```bash
+rm -f /etc/resolv.conf
+cat > /etc/resolv.conf << 'EOF'
+nameserver 8.8.8.8
+nameserver 1.1.1.1
+EOF
+
+```
+
+Portun serbest kaldığını ve internete erişimin sürdüğünü doğrula:
+
+```bash
+ss -lntup | grep ':53'
+ping -c 3 archive.ubuntu.com
+
+```
+
+*(Port 53 çıktısında `systemd-resolved` görünmemeli, ping başarılı dönmelidir.)*
+
+### Adım 4.2: Olası Paket Kilidi (Lock) ve Süreç Temizliği
+
+Eğer arka planda takılan `unattended-upgrades` veya `apt` süreçleri varsa temizle:
+
+```bash
+systemctl stop packagekit 2>/dev/null
+killall -9 apt apt-get unattended-upgrade 2>/dev/null
+
+rm -f /var/lib/apt/lists/lock
+rm -f /var/cache/apt/archives/lock
+rm -f /var/lib/dpkg/lock*
+
+dpkg --configure -a
+
+```
+
+---
+
+## 5. Paket Listesini Güncelleme ve Samba Kurulumu
+
+Artık paket güncellemesi sorunsuz çalışacaktır:
+
+```bash
+apt update
+
+```
+
+Ardından Samba AD DC gereksinimlerini kurmaya devam edebilirsiniz:
+
+```bash
+apt install samba krb5-user krb5-config winbind libpam-winbind libnss-winbind -y
+
+```
+
+Kerberos kurulumu sorarsa:
+
+Default Kerberos version 5 realm:
+TEST.COM
+
+Kerberos server:
+
+dc1.test.com
+
+Administrative server:
+
+dc1.test.com
+
+Yanlış girilirse paketleri kaldırmaya gerek yok:
+
+dpkg-reconfigure krb5-config
+
+ve tekrar:
+
+Default realm:
+TEST.COM
+
+Kerberos server:
+dc1.test.com
+
+Administrative server:
+dc1.test.com
+
+Kontrol:
+
+cat /etc/krb5.conf
+
+Bu dosya daha sonra Samba'nın oluşturduğu Kerberos yapılandırmasıyla değiştirilecek.
+
+6. systemd-resolved durumunu kontrol et
+
+Provision işleminden önce:
+
+ss -lntup | grep ':53'
+
+Eğer:
+
+127.0.0.53:53
+systemd-resolved
+
+görülüyorsa Ubuntu'nun stub resolver'ı DNS portunu kullanıyor.
+
+Samba Internal DNS kullanacağımız için:
+
+systemctl disable --now systemd-resolved
+
+Kontrol:
+
+ss -lntup | grep ':53'
+
+Artık systemd-resolved görünmemeli.
+
+Bu işlemden sonra /etc/resolv.conf çalışmayabilir.
+Samba AD DC başladıktan sonra resolver'ı 192.168.23.141 adresine yönlendireceğiz.
+
+7. Samba AD DC provision
+
+Önce servisleri durdur:
+
+systemctl stop smbd nmbd winbind samba-ad-dc 2>/dev/null
+
+Mevcut /etc/samba/smb.conf varsa yedekle:
+
+if [ -f /etc/samba/smb.conf ]; then
+    mv /etc/samba/smb.conf /etc/samba/smb.conf.bak
+fi
+
+Domain'i oluştur:
+
+samba-tool domain provision \
+ --use-rfc2307 \
+ --realm=TEST.COM \
+ --domain=TEST \
+ --server-role=dc \
+ --dns-backend=SAMBA_INTERNAL \
+ --adminpass='Admin@12345'
+
+Hedef:
+
+Realm       : TEST.COM
+Domain      : TEST
+Server Role : active directory domain controller
+Hostname    : dc1
+DNS Domain  : test.com
+DNS Backend : SAMBA_INTERNAL
+
+8. Samba'nın Kerberos configini kullan
+
+Provision işlemi doğru Kerberos yapılandırmasını oluşturur.
+
+Sisteme kopyala:
+
+cp /var/lib/samba/private/krb5.conf /etc/krb5.conf
+
+Kontrol:
+
+cat /etc/krb5.conf
+
+9. Samba AD DC servisini başlat
+
+Standalone Samba servislerini kapat:
+
+systemctl disable --now smbd nmbd winbind
+
+AD DC servisini aç:
+
+systemctl unmask samba-ad-dc
+systemctl enable --now samba-ad-dc
+
+Kontrol:
+
+systemctl status samba-ad-dc --no-pager
+
+Beklenen:
+
+Active: active (running)
+
+10. Samba DNS'in port 53'ü aldığını kontrol et
+
+ss -lntup | grep ':53'
+
+Samba DNS'in 53/UDP ve 53/TCP üzerinde dinlediğini görmelisin.
+
+Örneğin:
+
+0.0.0.0:53
+[::]:53
+dns[master]
+
+systemd-resolved görünmemeli.
+
+11. AD DC'nin DNS resolver'ını kendisine yönlendir
+
+rm -f /etc/resolv.conf
+
+Ardından:
+
+cat > /etc/resolv.conf << 'EOF'
+search test.com
+nameserver 192.168.23.141
+EOF
+
+Kontrol:
+
+cat /etc/resolv.conf
+
+Beklenen:
+
+search test.com
+nameserver 192.168.23.141
+
+Mantık:
+
+dc1.test.com
+192.168.23.141
+
+        DNS Query
+            │
+            ▼
+192.168.23.141:53
+Samba Internal DNS
+
+12. Samba DNS Forwarder'ı ayarla
+
+Samba provision sırasında /etc/samba/smb.conf içinde DNS forwarder olarak 127.0.0.53 oluşabilir.
+ systemd-resolved kapatıldığı için bu adres artık dış DNS sorgularını çözemeyecektir.
+
+Kontrol:
+
+cat /etc/samba/smb.conf
+
+Eğer [global] altında:
+
+dns forwarder = 127.0.0.53
+
+varsa dosyayı tam path ile aç:
+
+nano /etc/samba/smb.conf
+
+ve şu şekilde değiştir:
+
+dns forwarder = 8.8.8.8
+
+Yapılandırmayı kontrol et:
+
+testparm -s
+
+Hata yoksa Samba AD DC'yi yeniden başlat:
+
+systemctl restart samba-ad-dc
+systemctl is-active samba-ad-dc
+
+Beklenen:
+
+active
+
+Önce internal DNS'i kontrol et:
+
+host dc1.test.com
+
+Beklenen:
+
+dc1.test.com has address 192.168.23.141
+
+Sonra external DNS'i kontrol et:
+
+host us.archive.ubuntu.com
+
+IP adresleri dönmelidir. Son olarak:
+
+apt update
+
+başarılı çalışmalıdır.
+
+DNS mimarisi:
+
+Ubuntu dc1
+/etc/resolv.conf
+nameserver 192.168.23.141
+        │
+        ▼
+Samba Internal DNS
+192.168.23.141:53
+        │
+        ├── test.com ────────> Samba AD DNS
+        │
+        └── External Domains ─> 8.8.8.8 ─> Internet DNS
+
+13. Samba AD DNS testleri
+
+A kaydı:
+
+host -t A dc1.test.com 192.168.23.141
+
+Beklenen:
+
+dc1.test.com has address 192.168.23.141
+
+LDAP SRV:
+
+host -t SRV _ldap._tcp.test.com 192.168.23.141
+
+Beklenen yaklaşık:
+
+_ldap._tcp.test.com has SRV record 0 100 389 dc1.test.com.
+
+Kerberos SRV:
+
+host -t SRV _kerberos._udp.test.com 192.168.23.141
+
+Bunların timeout vermemesi gerekir.
+
+Resolver üzerinden de:
+
+host dc1.test.com
+
+çalışmalı.
+
+14. Kerberos'u test et
+
+kinit Administrator
+
+Komut parola istediğinde:
+
+Password for Administrator@TEST.COM:
+
+parolayı gir:
+
+Admin@12345
+
+Parola terminalde görünmez. Parolayı girdikten sonra tekrar shell'e Admin@12345 yazma.
+
+Ardından:
+
+klist
+
+Beklenen:
+
+Default principal: Administrator@TEST.COM
+
+ve ticket listesinde:
+
+krbtgt/TEST.COM@TEST.COM
+
+görülmeli.
+
+15. Samba AD temel sağlık kontrolü
+
+samba-tool domain info 192.168.23.141
+
+Ayrıca:
+
+samba-tool domain level show
+
+ve:
+
+samba-tool user list
+
+En azından:
+
+Administrator
+Guest
+krbtgt
+
+görülmeli.
+
+16. Lab kullanıcılarını oluştur
+
+Grupları oluştur:
+
+samba-tool group add kcusers
+samba-tool group add kcroot
+
+Kullanıcıları oluştur:
+
+samba-tool user create student1 Passw0rd1
+samba-tool user create root1 Passw0rd1
+
+samba-tool user create student2 Passw0rd1
+
+Gruplara ekle:
+
+samba-tool group addmembers kcusers student1
+samba-tool group addmembers kcroot root1
+
+samba-tool group addmembers kcusers student2
+
+Kontrol:
+
+samba-tool user list
+
+samba-tool group listmembers kcusers
+
+Beklenen:
+
+student1
+student2
+
+Kontrol:
+
+samba-tool group listmembers kcroot
+
+Beklenen:
+
+root1
+
+pip install ldap3
+
+sudo nano /etc/samba/smb.conf
+[global] altına ekle:
+ldap server require strong auth = no
+
+Sonra servisi restart et:
+sudo systemctl restart samba-ad-dc
+
+sudo nano test1.py
+from ldap3 import Server, Connection, ALL
+
+username = input("username: ")
+password = input("password: ")
+
+try:
+
+    server = Server('192.168.23.141', get_info=ALL)
+
+    conn = Connection(
+        server,
+        user=f"{username}@test.com",
+        password=password,
+        auto_bind=True
+    )
+
+    conn.search(
+        'dc=test,dc=com',
+        f'(sAMAccountName={username})',
+        attributes=['memberOf']
+    )
+
+    groups = str(conn.entries)
+
+    if "kcroot" in groups:
+        print("kcroot")
+
+    elif "kcusers" in groups:
+        print("kcusers")
+
+    else:
+        print("Yetkisiz kullanıcı")
+
+except Exception as e:
+    print("Login başarısız")
+
+17. FreeRADIUS'a geçmeden önce FINAL CHECK
+
+hostname
+hostname -f
+
+Beklenen:
+
+dc1
+dc1.test.com
+
+Statik IP
+
+ip -4 addr show ens3
+
+Beklenen:
+
+inet 192.168.23.141/24
+valid_lft forever preferred_lft forever
+
+dynamic olmamalı.
+
+Samba AD DC kontrolu:
+
+systemctl is-active samba-ad-dc
+
+Beklenen:
+
+active
+
+DNS
+
+host -t A dc1.test.com 192.168.23.141
+host -t SRV _ldap._tcp.test.com 192.168.23.141
+host -t SRV _kerberos._udp.test.com 192.168.23.141
+
+Kerberos
+
+kinit Administrator
+sifre:Admin@12345
+klist
+
+Beklenen:
+
+Default principal: Administrator@TEST.COM
+
+ve:
+
+krbtgt/TEST.COM@TEST.COM
+
+AD kullanıcıları ve grupları
+
+samba-tool user list
+samba-tool group listmembers kcusers
+samba-tool group listmembers kcroot
+
+Gateway ve Internet
+
+ip route
+ping -c 3 8.8.8.8
+
+Default route 192.168.23.2 üzerinden görünmeli ve ping başarılı olmalı.
+
+External DNS
+
+host us.archive.ubuntu.com
+
+External domain çözülmeli.
+
+DNS Portu
+
+ss -lntup | grep ':53'
+
+Samba DNS yani  0.0.0.0:53 ve dns[master] görünmeli.
+
+systemd-resolved görünmemeli.
+
+18. FreeRADIUS kurulumu
+
+Samba AD sunucusunda, yani:
+
+dc1.test.com
+192.168.23.141
+
+FreeRADIUS paketlerini kur:
+
+apt update
+apt install freeradius freeradius-utils -y
+
+Kurulumdan sonra servisin durumuna bak:
+
+systemctl status freeradius --no-pager
+
+Beklenen:
+
+Active: active (running)
+
+Ardından otomatik başlamasını kontrol et:
+
+systemctl enable freeradius
+
+18.1 FreeRADIUS portlarını kontrol et
+
+Şunu çalıştır:
+
+ss -lunp | grep radius
+
+Eğer burada sonuç göremezsek:
+
+ss -lunp | grep -E ':1812|:1813'
+
+FreeRADIUS'ın en az authentication için:
+
+UDP 1812
+
+üzerinde dinlediğini görmemiz gerekiyor.
+
+Accounting aktifse ayrıca:
+
+UDP 1813
+
+görebiliriz.
+
+18.2 FreeRADIUS config kontrolü
+
+Herhangi bir değişiklik yapmadan önce mevcut yapılandırmanın syntax kontrolünü yap:
+
+freeradius -XC
+
+Başarılıysa çıktının sonunda buna benzer bir mesaj olmalı:
+
+Configuration appears to be OK
+
+18.3 Şimdilik başka ayar yapma
+
+Bu aşamada henüz:
+
+Samba AD
+LDAP
+ntlm_auth
+Cisco
+Arista
+Huawei
+clients.conf
+
+tarafına geçmiyoruz.
+
+Önce şu üç komutla kontrol yap:
+
+systemctl status freeradius --no-pager
+
+ss -lunp | grep -E ':1812|:1813'
+
+freeradius -XC
+
+
+Şimdi AD'ye henüz dokunmadan lokal RADIUS testi yapalım.
+
+19. FreeRADIUS lokal kullanıcı testi
+
+FreeRADIUS kullanıcı dosyasını tam path ile aç:
+
+nano /etc/freeradius/3.0/mods-config/files/authorize
+
+Dosyanın en üstüne şunu ekle:
+
+radiustest Cleartext-Password := "Test123"
+
+Kaydet ve çık.
+
+Config kontrolü:
+
+freeradius -XC
+
+Sonunda:
+
+Configuration appears to be OK
+
+görürsen:
+
+systemctl restart freeradius
+
+Kontrol:
+
+systemctl is-active freeradius
+
+Beklenen:
+
+active
+
+Şimdi localhost üzerinden test:
+
+radtest radiustest Test123 127.0.0.1 0 testing123
+
+Buradaki:
+
+radiustest  → kullanıcı
+Test123     → kullanıcı parolası
+127.0.0.1   → FreeRADIUS
+0           → NAS-Port
+testing123  → localhost RADIUS shared secret
+
+Başarılıysa çıktıda kritik olarak:
+
+Received Access-Accept
+
+görmeliyiz.
+
+Şimdi bir sonraki aşama FreeRADIUS → Samba AD entegrasyonu.
+Ama önce AD tarafının student1 kullanıcısını gerçekten gördüğünü tekrar doğrulayalım.
+
+Sadece şu iki komutu çalıştır:
+
+samba-tool user show student1
+
+ve:
+
+samba-tool group listmembers kcusers
+
+İkincisinde:
+
+student1
+
+görmeliyiz.
+
+
+20. Şimdi FreeRADIUS → Samba AD parola doğrulamasına geçelim. 
+Burada önce ntlm_auth'un AD kullanıcısını doğrudan doğrulayabildiğini test edeceğiz.
+ FreeRADIUS config'ine henüz dokunmayalım.
+
+Şunu çalıştır:
+
+which ntlm_auth
+
+Ardından:
+
+ntlm_auth --request-nt-key \
+  --domain=TEST \
+  --username=student1 \
+  --password=Passw0rd1
+
+Başarılı durumda beklediğimiz:
+
+NT_STATUS_OK: The operation completed successfully. (0x0)
+
+Bir de özellikle yanlış parola ile kontrol edelim:
+
+ntlm_auth --request-nt-key \
+  --domain=TEST \
+  --username=student1 \
+  --password=Yanlis123
+
+Bunun başarısız olması gerekiyor.
+
+
+nano /etc/freeradius/3.0/mods-config/files/authorize
+
+2. satira sunu ekle:
+DEFAULT
+        Cisco-AVPair := "shell:priv-lvl=15"
+
+save et ve cik
+
+freeradius -XC
+systemctl restart freeradius
+systemctl is-active freeradius
+
+21. FreeRADIUS → Samba AD entegrasyonu
+
+Şu anda ntlm_auth root kullanıcısıyla çalışıyor.
+Önce FreeRADIUS servis kullanıcısının da Samba AD üzerinden authentication
+yapabildiğini doğrulayalım.
+
+21.1 freerad kullanıcısıyla ntlm_auth testi
+
+Şunu çalıştır:
+
+sudo -u freerad ntlm_auth --request-nt-key \
+  --domain=TEST \
+  --username=student1 \
+  --password=Passw0rd1
+
+Beklediğimiz:
+
+NT_STATUS_OK: The operation completed successfully. (0x0)
+
+Bu sonuç alınırsa FreeRADIUS servis kullanıcısı olan freerad,
+Samba AD üzerinden kullanıcı doğrulaması yapabiliyor demektir.
+
+
+21.2 FreeRADIUS ntlm_auth modülünü TEST domainine göre ayarlama
+
+ÖNEMLİ:
+FreeRADIUS, /etc/freeradius/3.0/mods-enabled/ klasöründeki dosyaları
+configuration olarak okur.
+
+Bu nedenle ntlm_auth dosyasının yedeğini mods-enabled klasörünün
+içine .bak uzantısıyla koymuyoruz.
+
+Yedeği /root altında oluştur:
+
+cp /etc/freeradius/3.0/mods-enabled/ntlm_auth \
+   /root/ntlm_auth.bak
+
+
+Dosyayı aç:
+
+nano /etc/freeradius/3.0/mods-enabled/ntlm_auth
+
+
+Mevcut örnek satır buna benzer:
+
+program = "/path/to/ntlm_auth --request-nt-key --domain=MYDOMAIN --username=%{mschap:User-Name} --password=%{User-Password}"
+
+
+Dosyanın içeriğini şu şekilde yap:
+
+exec ntlm_auth {
+    wait = yes
+    program = "/usr/bin/ntlm_auth --request-nt-key --domain=TEST --username=%{mschap:User-Name} --password=%{User-Password}"
+}
+
+
+Kaydet ve çık.
+
+
+Ardından henüz FreeRADIUS servisini restart etmeden configuration kontrolü yap:
+
+freeradius -XC
+
+
+Beklediğimiz:
+
+Configuration appears to be OK
+
+
+NOT:
+Eğer daha önce yanlışlıkla şu şekilde bir yedek oluşturulduysa:
+
+/etc/freeradius/3.0/mods-enabled/ntlm_auth.bak
+
+FreeRADIUS hem ntlm_auth hem de ntlm_auth.bak dosyasını okuyacağı için:
+
+Duplicate module "exec ntlm_auth"
+
+hatası oluşur.
+
+Bu durumda yedek dosyayı mods-enabled klasörünün dışına taşı:
+
+mv /etc/freeradius/3.0/mods-enabled/ntlm_auth.bak \
+   /root/ntlm_auth.bak
+
+Sonra tekrar kontrol et:
+
+freeradius -XC
+
+Beklediğimiz:
+
+Configuration appears to be OK
+
+
+21.3 – FreeRADIUS authentication akışını ntlm_auth'a yönlendireceğiz.
+
+Amacımız radtest ile gelen PAP parolasını ntlm_auth üzerinden Samba AD'ye doğrulatmak.
+
+Önce default dosyasının yedeğini alalım. Yedeği yine sites-enabled içine koymuyoruz:
+
+cp /etc/freeradius/3.0/sites-enabled/default \
+   /root/freeradius-default.bak
+
+Dosyayı aç:
+
+nano /etc/freeradius/3.0/sites-enabled/default
+
+Dosyanın içinde:
+
+authorize {
+
+bölümünü bul.
+
+Bu bölümün en başına, { satırından hemen sonra şunu ekle:
+
+    if (&User-Password) {
+        update control {
+            Auth-Type := ntlm_auth
+        }
+    }
+
+Yani başlangıcı kabaca şöyle olacak:
+
+authorize {
+
+    if (&User-Password) {
+        update control {
+            Auth-Type := ntlm_auth
+        }
+    }
+
+    filter_username
+    ...
+
+Sonra aynı dosyada:
+
+authenticate {
+
+bölümünü bul.
+
+Bu bölümün içine şunu ekle:
+
+    Auth-Type ntlm_auth {
+        ntlm_auth
+    }
+
+Örneğin:
+
+authenticate {
+
+    Auth-Type ntlm_auth {
+        ntlm_auth
+    }
+
+    Auth-Type PAP {
+        pap
+    }
+
+    ...
+}
+
+Kaydet ve çık.
+
+Henüz restart yapma.
+
+Sadece:
+
+freeradius -XC
+
+21.4 – gerçek AD kullanıcısını FreeRADIUS üzerinden test ediyoruz.
+
+Önce FreeRADIUS'ı restart et:
+
+systemctl restart freeradius
+
+Kontrol:
+
+systemctl is-active freeradius
+
+Beklenen:
+
+active
+
+Sonra student1 ile gerçek RADIUS testi:
+
+radtest student1 Passw0rd1 127.0.0.1 0 testing123
+
+Başarılıysa beklediğimiz kritik sonuç:
+
+Received Access-Accept
+
+22. FreeRADIUS'a network cihazlarını RADIUS client olarak tanımlama aşamasındayız.
+
+Önce sadece FreeRADIUS tarafını yapacağız.
+
+ Cisco/Arista/Huawei konfigürasyonlarına henüz dokunmuyoruz.
+
+22.1 clients.conf yedeği
+
+Yedeği /root altına alalım:
+
+cp /etc/freeradius/3.0/clients.conf \
+   /root/clients.conf.bak
+
+Dosyayı aç:
+
+nano /etc/freeradius/3.0/clients.conf
+
+Dosyanın en altına şu dört client'ı ekle:
+
+client cisco_sw1 {
+    ipaddr = 192.168.23.181
+    secret = Kc123456789
+    nas_type = cisco
+}
+
+client cisco_sw2 {
+    ipaddr = 192.168.23.182
+    secret = Kc123456789
+    nas_type = cisco
+}
+
+client arista_veos {
+    ipaddr = 192.168.23.183
+    secret = Kc123456789
+}
+
+client huawei_ar1000v {
+    ipaddr = 192.168.23.184
+    secret = Kc123456789
+}
+
+Burada labı sade tutmak için dört cihazda da aynı RADIUS shared secret'ı kullanıyoruz:
+
+Kc123456789
+
+Cisco konfigürasyonlarında da daha önce kullandığımız secret buydu. 
+Arista ve Huawei tarafını daha sonra aynı secret'a göre düzenleyeceğiz.
+
+Kaydet ve çık. Ardından restart yapmadan önce:
+
+freeradius -XC
+
+Beklediğimiz:
+
+Configuration appears to be OK
+
+
+22.2 – FreeRADIUS servisini yeni RADIUS client tanımlarıyla çalıştıralım.
+
+Şunları çalıştır:
+
+systemctl restart freeradius
+
+Ardından:
+
+systemctl is-active freeradius
+
+Beklenen:
+
+active
+
+Son olarak portların hâlâ dinlendiğini kontrol edelim:
+
+ss -lunp | grep -E '1812|1813'
+
+Beklediğimiz temel olarak:
+
+0.0.0.0:1812
+0.0.0.0:1813
+
+gibi satırlar.
+
+çalıştır.
+
+
+# Ubuntu SSO Server Kurulumu (192.168.23.145)
+
+
+Topoloji gereksinimlerine göre tüm adımlar 
+(Statik IP, DNS, Domain Join, SSSD, SSH Port 2222, Legacy SSH Client, SSO Menüsü
+ve Netmiko testi) eksiksiz olarak sıralanmıştır.
+
+---
+
+### 1. Root Yetkisine Geçiş ve Ağ / DNS Yapılandırması
+
+Giriş: `pfne` / `pfne`
+
+```bash
+sudo -i
+
+```
+
+Netplan dosyasını doğrudan Samba AD (`192.168.23.141`) DNS'i içerecek şekilde oluşturun:
+
+```bash
+cat > /etc/netplan/00-installer-config.yaml << 'EOF'
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ens3:
+      dhcp4: no
+      addresses:
+        - 192.168.23.145/24
+      routes:
+        - to: default
+          via: 192.168.23.2
+      nameservers:
+        addresses:
+          - 192.168.23.141
+        search:
+          - test.com
+EOF
+
+netplan generate
+netplan apply
+
+```
+
+Hosts dosyasını güncelleyin:
+
+```bash
+cat > /etc/hosts << 'EOF'
+127.0.0.1       localhost
+127.0.1.1       pfne
+
+192.168.23.145 sso.test.com sso
+192.168.23.141 dc1.test.com dc1
+
+::1             localhost ip6-localhost ip6-loopback
+ff02::1         ip6-allnodes
+ff02::2         ip6-allrouters
+EOF
+
+```
+
+Ağ ve DNS çözümlemesini test edin:
+
+```bash
+ping -c 3 192.168.23.141
+resolvectl query dc1.test.com
+
+```
+
+---
+
+### 2. Gerekli Paketlerin Kurulumu ve Domain Join
+
+Paket listesini güncelleyip domain ve SSH servis bileşenlerini yükleyin:
+
+```bash
+apt update
+apt install -y openssh-server realmd sssd sssd-tools libnss-sss libpam-sss adcli samba-common-bin packagekit krb5-user dnsutils
+
+systemctl enable --now ssh
+
+```
+
+> **Not:** `krb5-user` kurulumunda realm sorarsa:
+> * **Default Kerberos realm:** `TEST.COM`
+> * **Kerberos servers:** `dc1.test.com`
+> * **Administrative server:** `dc1.test.com`
+> 
+> 
+
+AD SRV kayıtlarını doğrulayın:
+
+```bash
+dig SRV _ldap._tcp.test.com
+dig SRV _kerberos._udp.test.com
+
+```
+
+TEST.COM domainine katılın:
+
+```bash
+realm discover test.com
+realm join --user=Administrator test.com
+
+```
+
+*(Parola istendiğinde `Admin@12345` girin)*
+
+---
+
+### 3. SSSD ve Otomatik Home Dizin Yapılandırması
+
+Kullanıcı adlarının domain eki olmadan (`student1`) tanınması için SSSD yapılandırmasını uygulayın:
+
+```bash
+cp /etc/sssd/sssd.conf /root/sssd.conf.bak
+
+cat > /etc/sssd/sssd.conf << 'EOF'
+[sssd]
+domains = test.com
+config_file_version = 2
+services = nss, pam
+
+[domain/test.com]
+default_shell = /bin/bash
+krb5_store_password_if_offline = True
+cache_credentials = True
+krb5_realm = TEST.COM
+realmd_tags = manages-system joined-with-adcli
+id_provider = ad
+fallback_homedir = /home/%u
+ad_domain = test.com
+use_fully_qualified_names = False
+ldap_id_mapping = True
+access_provider = ad
+EOF
+
+chmod 600 /etc/sssd/sssd.conf
+systemctl restart sssd
+
+```
+
+AD kullanıcısını ve gruplarını sorgulayın:
+
+```bash
+id student1
+getent passwd student1
+
+```
+
+AD kullanıcılarının ilk SSH girişinde ev dizinlerinin otomatik oluşmasını sağlayın:
+
+```bash
+pam-auth-update --enable mkhomedir
+
+```
+
+---
+
+### 4. Network Cihazları İçin Legacy SSH Parametreleri
+
+Eski şifreleme/anahtar algoritmalarını kullanan ağ cihazlarına SSH erişimi için client profili tanımlayın:
+
+```bash
+cat > /etc/ssh/ssh_config.d/network-lab.conf << 'EOF'
+Host 192.168.23.*
+    Ciphers aes128-ctr,aes192-ctr,aes256-ctr,aes128-cbc,3des-cbc
+    MACs hmac-md5,hmac-sha1,umac-64@openssh.com,hmac-sha2-256,hmac-sha2-512
+    KexAlgorithms +diffie-hellman-group-exchange-sha1
+    HostkeyAlgorithms +ssh-rsa
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+EOF
+
+```
+
+---
+
+### 5. SSO Menü Scripti ve İzinleri
+
+```bash
+mkdir -p /opt/sso
+
+cat > /opt/sso/sso_menu.py << 'EOF'
+#!/usr/bin/env python3
+import os
+import sys
+
+device_user = os.environ.get("USER")
+if not device_user:
+    print("Cannot detect USER, exiting.")
+    sys.exit(1)
+
+while True:
+    sys.stdout.write("search or select one:")
+    sys.stdout.flush()
+    line = sys.stdin.readline()
+    if not line:
+        continue
+    ip = line.strip()
+    if not ip:
+        continue
+    if ip.lower() in ("exit", "quit"):
+        sys.exit(0)
+    break
+
+cmd = ["ssh", "-o", "StrictHostKeyChecking=no", f"{device_user}@{ip}"]
+os.execvp(cmd[0], cmd)
+EOF
+
+chmod 755 /opt/sso/sso_menu.py
+python3 -m py_compile /opt/sso/sso_menu.py
+
+```
+
+---
+
+### 6. SSH Daemon Yapılandırması (Port 2222 + ForceCommand)
+
+`/etc/ssh/sshd_config` dosyasının yedeğini alın:
+
+```bash
+cp /etc/ssh/sshd_config /root/sshd_config.bak
+
+```
+
+Dosyada portu `2222` yapıp `kcusers` grubu için ForceCommand kuralını dosyanın en sonuna ekleyin:
+
+```bash
+# Varsa eski Port satırını güncelle, yoksa başa ekle
+if grep -q "^#*Port " /etc/ssh/sshd_config; then
+    sed -i 's/^#*Port .*/Port 2222/' /etc/ssh/sshd_config
+else
+    sed -i '1i Port 2222' /etc/ssh/sshd_config
+fi
+
+# Dosya sonuna Match bloğunu ekle
+cat >> /etc/ssh/sshd_config << 'EOF'
+
+Match Group kcusers
+    ForceCommand /opt/sso/sso_menu.py
+    PermitTTY yes
+    AllowTcpForwarding no
+    X11Forwarding no
+EOF
+
+```
+
+Yapılandırma kontrolü ve servisi yeniden başlatma:
+
+```bash
+sshd -t
+systemctl daemon-reload
+systemctl restart ssh.socket ssh.service 2>/dev/null || systemctl restart ssh
+
+# Port dinleme kontrolü
+ss -lntp | grep 2222
+
+```
+
+---
+
+### 7. Uçtan Uca Doğrulama (Windows / İstemci Tarafı)
+
+#### Manuel SSH Testi
+
+Windows terminalinden:
+
+```bash
+ssh -p 2222 student1@192.168.23.145
+
+```
+
+* Parola: `Passw0rd1`
+* Ekrana `search or select one:` prompt'u geldiğinde `192.168.23.181` yazıp enterlayın.
+
+
+* Cihaz şifresi sorulduğunda tekrar `Passw0rd1` girerek SW1 CLI promptuna ulaşıldığını görün.
+
+
+
+#### Otomasyon Testi (Python Netmiko)
+
+```python
+import os
+import platform
+from netmiko import ConnectHandler, redispatch
+
+server_ip = '192.168.23.145'
+ip = '192.168.23.181'
+device_username = 'student1'
+decrypted_password = 'Passw0rd1'
+
+def ping_device(target_ip):
+    param = '-n' if platform.system().lower() == 'windows' else '-c'
+    null = 'nul' if platform.system().lower() == 'windows' else '/dev/null'
+    return os.system(f"ping {param} 1 {target_ip} > {null} 2>&1") == 0
+
+if not ping_device(ip):
+    print(f'ip:{ip}, ping:False, sso_ssh:False, device_ssh:False')
+else:
+    print(f'ip:{ip}, ping:True')
+    print('Connecting to SSO server...')
+    try:
+        server = {
+            'device_type': 'terminal_server',
+            'host': server_ip,
+            'username': device_username,
+            'password': decrypted_password,
+            'port': 2222,
+            'conn_timeout': 30,
+            'global_delay_factor': 2,
+            'session_log': 'outputx.log'
+        }
+        jump_conn = ConnectHandler(**server)
+        print('SSO Sunucusuna baglanildi.')
+
+        jump_conn.read_until_pattern(pattern='search or select one:', read_timeout=30)
+        print(f'>> IP gonderiliyor: {ip}')
+        jump_conn.write_channel(f"{ip}\n")
+
+        jump_conn.read_until_pattern(pattern=r"[Pp]assword:", read_timeout=30)
+        print('>> Cihaz sifresi gonderiliyor...')
+        jump_conn.write_channel(f"{decrypted_password}\n")
+
+        prompt_out = jump_conn.read_until_pattern(pattern=r"[>#]", read_timeout=30)
+        print(f'>> Prompt alindi: {prompt_out.strip()}')
+
+        redispatch(jump_conn, device_type='cisco_ios')
+        
+        output = jump_conn.send_command('show ip interface brief')
+        print("\n--- Cihaz Ciktisi ---")
+        print(output)
+        
+    except Exception as e:
+        print(f'Hata: {e}')
+    finally:
+        if 'jump_conn' in locals():
+            jump_conn.disconnect()
+
+```

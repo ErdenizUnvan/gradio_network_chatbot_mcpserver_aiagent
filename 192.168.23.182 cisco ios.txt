@@ -1,0 +1,54 @@
+enable
+terminal length 0
+
+configure terminal
+
+hostname SW2
+
+aaa new-model
+aaa authentication login default group radius local
+aaa authorization exec default group radius local
+aaa accounting exec default start-stop group radius
+aaa accounting network default start-stop group radius
+aaa session-id common
+
+ip domain-name test.com
+
+interface Vlan1
+ no ip access-group Example1 in
+ no ip address
+ ip address 192.168.23.182 255.255.255.0
+ no shutdown
+exit
+
+ip default-gateway 192.168.23.2
+
+ip access-list extended Example1
+ permit tcp host 192.168.23.145 host 192.168.23.182 eq 22
+ permit udp host 192.168.23.182 host 192.168.23.141 eq 1812
+ permit udp host 192.168.23.182 host 192.168.23.141 eq 1813
+ deny tcp any host 192.168.23.182 eq 22
+ permit ip any any
+exit
+
+interface Vlan1
+ ip access-group Example1 in
+exit
+
+radius-server retransmit 5
+radius-server timeout 20
+
+radius server RADIUS_SERVER_NAME
+ address ipv4 192.168.23.141 auth-port 1812 acct-port 1813
+ key Kc123456789
+exit
+
+line vty 0 4
+ privilege level 15
+ transport input ssh
+exit
+
+crypto key generate rsa modulus 2048
+ 
+end
+write memory
